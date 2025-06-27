@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>上浮小游戏</title>
+  <meta name="viewport" content="width=375, initial-scale=1.0, user-scalable=no">
+  <style>
+    body { margin:0; background:#F6F6F6; }
+    #gameCanvas { display:block; margin:40px auto 0 auto; background:#fff; border-radius:12px; box-shadow:0 0 8px #eee; }
+    #score { position: absolute; left: 10px; top: 10px; font-size: 28px; color: #0084FF; font-weight: bold; z-index: 10;}
+    #msg { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); text-align: center; font-size: 28px; color: #FF3838; font-weight: bold; z-index: 20; background: rgba(255,255,255,0.9); border-radius: 12px; padding: 24px 0; display: none;}
+    #startScreen, #gameoverScreen {
+      position: absolute; left: 0; right: 0; top: 0; bottom: 0;
+      background: rgba(255,255,255,0.95); z-index: 30; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    }
+    #startScreen img, #gameoverScreen img {
+      width: 100%; max-width: 375px; cursor: pointer; border-radius: 12px; box-shadow: 0 0 8px #eee;
+    }
+    #startScreen { display: flex; }
+    #gameoverScreen { display: none; }
+  </style>
+</head>
+<body>
+  <div id="score">0</div>
+  <div id="msg"></div>
+  <div id="startScreen">
+    <img id="startBg" src="start-bg.png" alt="开始游戏">
+  </div>
+  <div id="gameoverScreen">
+    <img id="gameoverBg" src="gameover-bg.png" alt="游戏结束">
+  </div>
+  <canvas id="gameCanvas" width="375" height="600"></canvas>
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+    const scoreDiv = document.getElementById('score');
+    const msgDiv = document.getElementById('msg');
+    const startScreen = document.getElementById('startScreen');
+    const startBg = document.getElementById('startBg');
+    const gameoverScreen = document.getElementById('gameoverScreen');
+    const gameoverBg = document.getElementById('gameoverBg');
+
+    // 加载主角图片
+    const heroImg = new Image();
+    heroImg.src = "hero.png";
+    // 加载背景图片
+    const bgImg = new Image();
+    bgImg.src = "background.png";
+
+    // 游戏参数
+    let gameState = 'ready'; // ready, playing, over, win
+    let score = 0;
+    let obstacles = [];
+    let frame = 0;
+    let lastObstacleX = 0;
+    let lastClickTime = 0;
+    let clickSpeed = 0;
+    let bgOffset = 0;
+    let bgSpeed = 0.3;
+    let bgTargetSpeed = 0.3;
+    let windAnim = 0;
+    let windFrame = 0;
+
+    // 主角参数
+    const hero = {
+      x: 80,
+      y: H/2,
+      r: 32,
+      vy: 0,
+      gravity: 0.12,
+      baseLift: -2.2,
+      maxLift: -4,
+      angle: 0,
+      maxAngle: -Math.PI/5,
+      minAngle: Math.PI/7
+    };    function resetGame() {
+      score = 0;
+      obstacles = [];
+      frame = 0;
+      lastObstacleX = 0;
+      hero.y = H/2;
+      hero.vy = 0;
+      hero.angle = 0;
+      gameState = 'playing';
+      msgDiv.style.display = 'none';
+      scoreDiv.textContent = '0';
+      bgOffset = 0;
+      bgSpeed = 0.3;
+      bgTargetSpeed = 0.3;
+      windAnim = 0;
+      windFrame = 0;
+      lastTimestamp = performance.now();
+    }
+
+    function getObstacleDistance() {
+      const maxDistance = 140, minDistance = 40;
+      const s = Math.min(score, 30);
+      return maxDistance - (maxDistance - minDistance) * (s / 30);
+    }
+    function getGap() {
+      const maxGap = 200, minGap = 90;
+      const s = Math.min(score, 30);
+      return maxGap - (maxGap - minGap) * (s / 30);
+    }
+    function getSpeed() {
+      const minSpeed = 1.8, maxSpeed = 6;
+      const s = Math.min(score, 30);
+      return minSpeed + (maxSpeed - minSpeed) * (s / 30);
+    }
+
+    function addObstacle() {
+      const gap = getGap();
+      const minH = 80;
+      const maxH = H-gap-minH;
+      const topH = Math.floor(Math.random()*(maxH-minH)+minH);
+      const types = ['pipe','block','redbrick','laser','metal','blade','rock','fire'];
+      const type = types[Math.floor(Math.random()*types.length)];
+      obstacles.push({
+        x: W+30,
+        width: 48,
+        top: topH,
+        bottom: H-topH-gap,
+        passed: false,
+        type
+      });
+      lastObstacleX = W+30;
+    }
+
+    function drawBg() {
+      if(bgImg.complete && bgImg.naturalWidth > 0) {
+        let offset = bgOffset % W;
+        ctx.drawImage(bgImg, -offset, 0, W, H);
+        ctx.drawImage(bgImg, W-offset, 0, W, H);
+      } else {
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0,0,W,H);
+      }
+    }
+    function drawPixelPipe(x, y, w, h, up) {
+      ctx.save();
+      ctx.fillStyle = '#3cb043';
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = '#267a2e';
+      ctx.lineWidth = 4;
+      ctx.strokeRect(x+2, y+2, w-4, h-4);
+      ctx.fillStyle = '#6ee36e';
+      if(up) ctx.fillRect(x-4, y+h-10, w+8, 12);
+      else ctx.fillRect(x-4, y-2, w+8, 12);
+      ctx.restore();
+    }
+    function drawPixelBlock(x, y, w, h) {
+      ctx.save();
+      ctx.fillStyle = '#ffb300';
+      for(let i=0;i<w;i+=8){
+        for(let j=0;j<h;j+=8){
+          ctx.fillStyle = (i+j)%16===0 ? '#ffd54f' : '#ffb300';
+          ctx.fillRect(x+i, y+j, 8, 8);
+        }
+      }
+      ctx.strokeStyle = '#7c4a1e';
+      ctx.lineWidth = 4;
+      ctx.strokeRect(x+2, y+2, w-4, h-4);
+      ctx.restore();
+    }
+    function drawRedBrick(x, y, w, h) {
+      ctx.save();
+      for(let i=0;i<w;i+=12){
+        for(let j=0;j<h;j+=8){
+          ctx.fillStyle = (i/12+j/8)%2===0 ? '#b71c1c' : '#e53935';
+          ctx.fillRect(x+i, y+j, 12, 8);
+          ctx.strokeStyle = '#fff3';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(x+i, y+j, 12, 8);
+        }
+      }
+      ctx.strokeStyle = '#7c4a1e';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(x+1, y+1, w-2, h-2);
+      ctx.restore();
+    }
+    function drawSimpleLaser(x, y, w, h) {
+      ctx.save();
+      ctx.fillStyle = '#ff1744';
+      ctx.fillRect(x+6, y+4, w-12, h-8);
+      ctx.fillStyle = '#fff';
+      ctx.globalAlpha = 0.3;
+      ctx.fillRect(x+10, y+8, w-20, h-16);
+      ctx.globalAlpha = 1;
+      ctx.restore();
+    }
+    function drawPixelMetal(x, y, w, h) {
+      ctx.save();
+      ctx.fillStyle = '#8e9bae';
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = '#5c6a7d';
+      ctx.lineWidth = 4;
+      ctx.strokeRect(x+2, y+2, w-4, h-4);
+      ctx.fillStyle = '#cfd8dc';
+      ctx.fillRect(x+4, y+4, w-8, 8);
+      ctx.restore();
+    }
+    function drawPixelBlade(x, y, w, h, up) {
+      ctx.save();
+      ctx.beginPath();
+      if(up) {
+        ctx.moveTo(x+6, y+h);
+        ctx.lineTo(x+w/2, y+h-0.85*h);
+        ctx.lineTo(x+w-6, y+h);
+      } else {
+        ctx.moveTo(x+6, y);
+        ctx.lineTo(x+w/2, y+0.85*h);
+        ctx.lineTo(x+w-6, y);
+      }
+      ctx.closePath();
+      ctx.fillStyle = '#e0e0e0';
+      ctx.strokeStyle = '#bdbdbd';
+      ctx.lineWidth = 4;
+      ctx.fill();
+      ctx.stroke();
+      ctx.save();
+      ctx.globalAlpha = 0.5;
+      ctx.beginPath();
+      if(up) {
+        ctx.moveTo(x+w/2, y+h-0.85*h);
+        ctx.lineTo(x+w*0.6, y+h-0.3*h);
+        ctx.lineTo(x+w*0.4, y+h-0.3*h);
+      } else {
+        ctx.moveTo(x+w/2, y+0.85*h);
+        ctx.lineTo(x+w*0.6, y+0.3*h);
+        ctx.lineTo(x+w*0.4, y+0.3*h);
+      }
+      ctx.closePath();
+      ctx.fillStyle = '#fff';
+      ctx.fill();
+      ctx.restore();
+      ctx.beginPath();
+      if(up) {
+        ctx.moveTo(x+w*0.4, y+h);
+        ctx.lineTo(x+w*0.6, y+h);
+        ctx.lineTo(x+w*0.6, y+h+10);
+        ctx.lineTo(x+w*0.4, y+h+10);
+      } else {
+        ctx.moveTo(x+w*0.4, y);
+        ctx.lineTo(x+w*0.6, y);
+        ctx.lineTo(x+w*0.6, y-10);
+        ctx.lineTo(x+w*0.4, y-10);
+      }
+      ctx.closePath();
+      ctx.fillStyle = '#b71c1c';
+      ctx.fill();
+      ctx.strokeStyle = '#7c4a1e';
+      ctx.stroke();
+      ctx.restore();
+    }
+    function drawPixelRock(x, y, w, h) {
+      ctx.save();
+      ctx.fillStyle = '#888';
+      ctx.beginPath();
+      ctx.moveTo(x+4, y+h-4);
+      ctx.lineTo(x+w-6, y+h-2);
+      ctx.lineTo(x+w-2, y+h/2);
+      ctx.lineTo(x+w-8, y+8);
+      ctx.lineTo(x+10, y+2);
+      ctx.lineTo(x+2, y+h/2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#555';
+      ctx.beginPath();
+      ctx.moveTo(x+w-6, y+h-2);
+      ctx.lineTo(x+w-2, y+h/2);
+      ctx.lineTo(x+w-8, y+8);
+      ctx.lineTo(x+w-12, y+h-8);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#bbb';
+      ctx.beginPath();
+      ctx.moveTo(x+10, y+2);
+      ctx.lineTo(x+18, y+8);
+      ctx.lineTo(x+12, y+18);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+    function drawFire(x, y, w, h, frame) {
+      ctx.save();
+      let flameCount = Math.max(2, Math.floor(w/12));
+      let flameW = w/flameCount;
+      let baseH = Math.max(40, h * 0.8);
+      for(let i=0;i<flameCount;i++) {
+        let fx = x+flameW*i;
+        let fy = y+h-2;
+        let flameH = baseH + Math.sin(frame/5+i)*8;
+        let grad = ctx.createLinearGradient(fx, fy, fx, fy-flameH);
+        grad.addColorStop(0, 'rgba(255,140,0,0.8)');
+        grad.addColorStop(0.5, 'rgba(255,200,40,0.5)');
+        grad.addColorStop(1, 'rgba(255,255,255,0.1)');
+        ctx.beginPath();
+        ctx.moveTo(fx, fy);
+        ctx.bezierCurveTo(fx+flameW/4, fy-flameH*0.7, fx+flameW*3/4, fy-flameH*0.7, fx+flameW, fy);
+        ctx.lineTo(fx+flameW, fy+10);
+        ctx.lineTo(fx, fy+10);
+        ctx.closePath();
+        ctx.fillStyle = grad;
+        ctx.shadowColor = '#ffb300';
+        ctx.shadowBlur = 8;
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        let grad2 = ctx.createLinearGradient(fx, fy, fx, fy-flameH*0.7);
+        grad2.addColorStop(0, 'rgba(255,220,100,0.7)');
+        grad2.addColorStop(1, 'rgba(255,255,255,0.2)');
+        ctx.beginPath();
+        ctx.moveTo(fx+flameW*0.2, fy);
+        ctx.bezierCurveTo(fx+flameW/2, fy-flameH*0.8, fx+flameW*0.8, fy-flameH*0.8, fx+flameW*0.8, fy);
+        ctx.lineTo(fx+flameW*0.8, fy+6);
+        ctx.lineTo(fx+flameW*0.2, fy+6);
+        ctx.closePath();
+        ctx.fillStyle = grad2;
+        ctx.globalAlpha = 0.7;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        for(let k=0;k<2;k++) {
+          let sx = fx+flameW*Math.random();
+          let sy = fy-flameH*Math.random()*0.8;
+          ctx.beginPath();
+          ctx.arc(sx, sy, 1.2, 0, 2*Math.PI);
+          ctx.fillStyle = 'rgba(255,220,120,0.7)';
+          ctx.fill();
+        }
+      }
+      ctx.restore();
+    }
+    function drawHero() {
+      ctx.save();
+      ctx.translate(hero.x, hero.y);
+      ctx.rotate(hero.angle);
+      if(heroImg.complete && heroImg.naturalWidth > 0) {
+        ctx.drawImage(heroImg, -hero.r, -hero.r, hero.r*2, hero.r*2);
+      } else {
+        ctx.beginPath();
+        ctx.arc(0,0,hero.r,0,2*Math.PI);
+        ctx.fillStyle = '#0084FF';
+        ctx.fill();
+      }
+      ctx.restore();
+      if(windAnim > 0) drawWind(hero.x, hero.y+hero.r+6, windFrame);
+    }
+    function drawWind(x, y, frame) {
+      ctx.save();
+      let windAlpha = windAnim/18;
+      let grad = ctx.createRadialGradient(x, y+16, 8, x, y+32, 36);
+      grad.addColorStop(0, 'rgba(180,230,255,'+(0.18*windAlpha)+')');
+      grad.addColorStop(0.5, 'rgba(180,230,255,'+(0.10*windAlpha)+')');
+      grad.addColorStop(1, 'rgba(180,230,255,0)');
+      ctx.beginPath();
+      ctx.ellipse(x, y+28, 32+Math.sin(frame/4)*2, 18+Math.cos(frame/7)*2, 0, 0, 2*Math.PI);
+      ctx.fillStyle = grad;
+      ctx.globalAlpha = 1;
+      ctx.fill();
+      for(let i=0;i<2;i++) {
+        ctx.save();
+        ctx.globalAlpha = 0.32*windAlpha;
+        ctx.beginPath();
+        for(let j=0;j<=10;j++) {
+          let px = x-20+4*j + Math.sin(frame/2+j+i*2)*2;
+          let py = y+18+i*8 + Math.sin(frame/4+j*0.7+i*2)*2;
+          if(j===0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.strokeStyle = '#b3e5fc';
+        ctx.lineWidth = 2-i*0.5;
+        ctx.shadowColor = '#b3e5fc';
+        ctx.shadowBlur = 6-i*2;
+        ctx.stroke();
+        ctx.restore();
+      }
+      ctx.globalAlpha = 1;
+      ctx.restore();
+    }
+    function drawObstacles() {
+      obstacles.forEach(o => {
+        switch(o.type) {
+          case 'pipe':
+            drawPixelPipe(o.x, 0, o.width, o.top, true);
+            drawPixelPipe(o.x, H-o.bottom, o.width, o.bottom, false);
+            break;
+          case 'block':
+            drawPixelBlock(o.x, 0, o.width, o.top);
+            drawPixelBlock(o.x, H-o.bottom, o.width, o.bottom);
+            break;
+          case 'redbrick':
+            drawRedBrick(o.x, 0, o.width, o.top);
+            drawRedBrick(o.x, H-o.bottom, o.width, o.bottom);
+            break;
+          case 'laser':
+            drawSimpleLaser(o.x, 0, o.width, o.top);
+            drawSimpleLaser(o.x, H-o.bottom, o.width, o.bottom);
+            break;
+          case 'metal':
+            drawPixelMetal(o.x, 0, o.width, o.top);
+            drawPixelMetal(o.x, H-o.bottom, o.width, o.bottom);
+            break;
+          case 'blade':
+            drawPixelBlade(o.x, o.top-40, o.width, o.top<40?o.top:40, true);
+            drawPixelBlade(o.x, H-o.bottom, o.width, o.bottom<40?o.bottom:40, false);
+            break;
+          case 'rock':
+            drawPixelRock(o.x, 0, o.width, o.top);
+            drawPixelRock(o.x, H-o.bottom, o.width, o.bottom);
+            break;
+          case 'fire':
+            drawFire(o.x, 0, o.width, o.top, frame);
+            drawFire(o.x, H-o.bottom, o.width, o.bottom, frame);
+            break;
+        }
+      });
+    }
+    function checkCollision() {
+      for(let o of obstacles) {
+        let topHit = false, bottomHit = false;
+        if(o.type === 'fire') {
+          let flameH = Math.min(40, o.top);
+          if(hero.x+hero.r > o.x && hero.x-hero.r < o.x+o.width) {
+            if(hero.y-hero.r < flameH) topHit = true;
+          }
+          flameH = Math.min(40, o.bottom);
+          if(hero.x+hero.r > o.x && hero.x-hero.r < o.x+o.width) {
+            if(hero.y+hero.r > H-flameH) bottomHit = true;
+          }
+        } else if(o.type === 'redbrick') {
+          if(hero.x+hero.r > o.x && hero.x-hero.r < o.x+o.width) {
+            if(hero.y-hero.r < o.top) topHit = true;
+            if(hero.y+hero.r > H-o.bottom) bottomHit = true;
+          }
+        } else {
+          if(hero.x+hero.r > o.x && hero.x-hero.r < o.x+o.width) {
+            if(hero.y-hero.r < o.top) topHit = true;
+            if(hero.y+hero.r > H-o.bottom) bottomHit = true;
+          }
+        }
+        if(topHit || bottomHit) return true;
+      }
+      if(hero.y-hero.r < 0 || hero.y+hero.r > H) return true;
+      return false;
+    }    // 帧率适配主循环
+    let lastTimestamp = performance.now();
+    function loop(now) {
+      if(gameState !== 'playing') return;
+      let delta = now - lastTimestamp;
+      lastTimestamp = now;
+      let ratio = delta / 16.67;
+
+      frame++;
+      windFrame++;
+      if(windAnim>0) windAnim--;
+      bgSpeed += (bgTargetSpeed - bgSpeed) * 0.08 * ratio;
+      bgOffset += bgSpeed * ratio;
+      drawBg();
+
+      let speed = getSpeed() * ratio;
+      obstacles.forEach(o => o.x -= speed);
+      if(obstacles.length && obstacles[0].x+obstacles[0].width < 0) obstacles.shift();
+      drawObstacles();
+      if(obstacles.length === 0 || (W+30 - lastObstacleX) >= getObstacleDistance()) {
+        addObstacle();
+      }
+      hero.vy += hero.gravity * ratio;
+      hero.y += hero.vy * ratio;
+      if(hero.angle < 0) hero.angle += 0.018 * ratio;
+      if(hero.angle > hero.minAngle) hero.angle = hero.minAngle;
+      drawHero();
+      obstacles.forEach(o => {
+        if(!o.passed && o.x+o.width < hero.x-hero.r) {
+          o.passed = true;
+          score++;
+          scoreDiv.textContent = score;
+        }
+      });
+      if(checkCollision()) {
+        gameState = 'over';
+        msgDiv.textContent = '游戏结束';
+        msgDiv.style.display = 'block';
+        showGameOver();
+        return;
+      }
+      if(score >= 30) {
+        gameState = 'win';
+        msgDiv.textContent = '恭喜通关！';
+        msgDiv.style.display = 'block';
+        showGameOver();
+        return;
+      }
+      requestAnimationFrame(loop);
+    }
+
+    // 显示结束图片
+    function showGameOver() {
+      gameoverScreen.style.display = 'flex';
+    }
+
+    // 开始游戏
+    function startGame() {
+      startScreen.style.display = 'none';
+      gameoverScreen.style.display = 'none';
+      msgDiv.style.display = 'none';
+      resetGame();
+      lastTimestamp = performance.now();
+      requestAnimationFrame(loop);
+    }
+
+    // 重新开始游戏
+    function restartGame() {
+      startGame();
+    }
+
+    // 点击开始图片
+    startBg.addEventListener('click', startGame);
+
+    // 点击结束图片
+    gameoverBg.addEventListener('click', restartGame);
+
+    // 游戏操作
+    function onClick() {
+      if(gameState !== 'playing') return;
+      const now = Date.now();
+      let dt = now - lastClickTime;
+      lastClickTime = now;
+      let lift = hero.baseLift;
+      if(dt < 400) {
+        lift = hero.maxLift + (hero.baseLift-hero.maxLift)*(dt/400);
+        if(lift > hero.baseLift) lift = hero.baseLift;
+        if(lift < hero.maxLift) lift = hero.maxLift;
+      }
+      hero.vy = lift;
+      hero.angle = hero.maxAngle;
+      let speed = 0.3;
+      if(dt < 400) {
+        speed = 0.3 + (1.2-0.3)*(1-dt/400);
+      }
+      bgTargetSpeed = speed;
+      windAnim = 18;
+    }
+
+    canvas.addEventListener('mousedown', onClick);
+    canvas.addEventListener('touchstart', function(e){ onClick(); e.preventDefault(); });
+
+    // 可选：键盘空格/回车也能重新开始
+    document.addEventListener('keydown', function(e){
+      if(gameState !== 'playing' && (e.key===' '||e.key==='Enter')) {
+        startGame();
+      }
+    });
+  </script>
+</body>
+</html>
